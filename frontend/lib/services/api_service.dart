@@ -1,5 +1,8 @@
 import 'dart:convert';
+import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:http/io_client.dart';
 import '../models/user.dart';
 import '../models/auth_response.dart';
 import '../models/test_question.dart';
@@ -11,7 +14,7 @@ class ApiService {
   // URL base dinâmica baseada no ambiente
   static String get baseUrl => Environment.getApiUrl();
   
-  static const Map<String, String> headers = {
+  static const Map<String, String> defaultHeaders = {
     'Content-Type': 'application/json',
   };
 
@@ -22,17 +25,87 @@ class ApiService {
     }
   }
 
+  // Criar cliente HTTP personalizado para lidar com certificados e timeouts
+  static http.Client _createHttpClient() {
+    if (kIsWeb) {
+      // Para web, usar cliente normal
+      return http.Client();
+    } else {
+      // Para mobile/desktop, criar cliente customizado
+      final httpClient = HttpClient()
+        ..connectionTimeout = const Duration(seconds: 30)
+        ..badCertificateCallback = 
+            (X509Certificate cert, String host, int port) => true;
+      return IOClient(httpClient);
+    }
+  }
+
+  // Método genérico para fazer requisições HTTP
+  static Future<http.Response> _makeRequest(
+    String method,
+    String endpoint,
+    {
+      Map<String, String>? headers,
+      Object? body,
+      int timeoutSeconds = 30,
+    }
+  ) async {
+    final client = _createHttpClient();
+    final uri = Uri.parse('$baseUrl/$endpoint'.replaceAll('//', '/'));
+    
+    _log('🌐 [HTTP] $method $uri');
+    
+    try {
+      final requestFuture = _executeRequest(client, method, uri, headers, body);
+      final response = await requestFuture.timeout(
+        Duration(seconds: timeoutSeconds),
+        onTimeout: () {
+          throw Exception('Timeout após $timeoutSeconds segundos');
+        },
+      );
+
+      _log('📥 [HTTP] Resposta: ${response.statusCode}');
+      return response;
+    } catch (e) {
+      _log('💥 [HTTP] Erro: $e');
+      rethrow;
+    } finally {
+      client.close();
+    }
+  }
+
+  static Future<http.Response> _executeRequest(
+    http.Client client,
+    String method,
+    Uri uri,
+    Map<String, String>? headers,
+    Object? body,
+  ) async {
+    switch (method.toUpperCase()) {
+      case 'GET':
+        return await client.get(uri, headers: headers);
+      case 'POST':
+        return await client.post(uri, headers: headers, body: body);
+      case 'PUT':
+        return await client.put(uri, headers: headers, body: body);
+      case 'DELETE':
+        return await client.delete(uri, headers: headers);
+      default:
+        throw Exception('Método HTTP não suportado: $method');
+    }
+  }
+
   // ========== MÉTODOS DE AUTENTICAÇÃO ==========
 
   // Cadastro de usuário
   static Future<AuthResponse> register(User user, String password) async {
     try {
       _log('🚀 [API] Tentando registrar usuário: ${user.email}');
-      _log('📍 [API] URL: $baseUrl/auth/register');
       
-      final response = await http.post(
-        Uri.parse('$baseUrl/auth/register'),
-        headers: headers,
+      final response = await _makeRequest(
+        'POST',
+        'auth/register',
+        headers: defaultHeaders,
         body: json.encode({
           'name': user.name,
           'email': user.email,
@@ -68,11 +141,11 @@ class ApiService {
   static Future<AuthResponse> login(String email, String password) async {
     try {
       _log('🚀 [API] Tentando login: $email');
-      _log('📍 [API] URL: $baseUrl/auth/login');
       
-      final response = await http.post(
-        Uri.parse('$baseUrl/auth/login'),
-        headers: headers,
+      final response = await _makeRequest(
+        'POST',
+        'auth/login',
+        headers: defaultHeaders,
         body: json.encode({
           'email': email,
           'password': password,
@@ -116,12 +189,12 @@ class ApiService {
   static Future<AuthResponse> verifyToken(String token) async {
     try {
       _log('🔐 [API] Verificando token...');
-      _log('📍 [API] URL: $baseUrl/auth/verify');
       
-      final response = await http.get(
-        Uri.parse('$baseUrl/auth/verify'),
+      final response = await _makeRequest(
+        'GET',
+        'auth/verify',
         headers: {
-          ...headers,
+          ...defaultHeaders,
           'Authorization': 'Bearer $token',
         },
       );
@@ -153,23 +226,37 @@ class ApiService {
   static Future<List<TestQuestion>?> getTestQuestions() async {
     try {
       _log('🚀 [API] Buscando perguntas do teste...');
-      _log('📍 [API] URL: $baseUrl/test/questions');
       
-      final response = await http.get(
-        Uri.parse('$baseUrl/test/questions'),
-        headers: headers,
+      final response = await _makeRequest(
+        'GET',
+        'test/questions',
+        headers: defaultHeaders,
       );
 
       _log('📡 [API] Resposta das perguntas - Status: ${response.statusCode}');
       
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
-        if (data['success'] == true) {
-          _log('✅ [API] Perguntas carregadas: ${data['questions']?.length ?? 0}');
+
+        // Se a API retornar uma lista direta
+        if (data is List) {
+          _log('✅ [API] Perguntas carregadas: ${data.length}');
+          return data.map((q) => TestQuestion.fromJson(q)).toList();
+        }
+
+        // Se a API retornar um objeto com 'success' e 'questions'
+        if (data['success'] == true && data['questions'] is List) {
+          _log('✅ [API] Perguntas carregadas: ${data['questions'].length}');
           return (data['questions'] as List).map((q) => TestQuestion.fromJson(q)).toList();
         }
+
+        // Caso inesperado
+        _log('⚠️ [API] Resposta inesperada: $data');
+        return null;
+      } else {
+        _log('❌ [API] Erro HTTP: ${response.statusCode}');
+        return null;
       }
-      return null;
     } catch (e) {
       _log('💥 [API] ERRO ao carregar perguntas: $e');
       return null;
@@ -180,18 +267,18 @@ class ApiService {
   static Future<bool> saveTestResult(TestResult result) async {
     try {
       _log('🚀 [API] Tentando salvar resultado do teste...');
-      _log('📍 [API] URL: $baseUrl/test/results');
       _log('📊 [API] Dados do resultado: ${json.encode(result.toJson())}');
       
       // Obter token de autenticação
       final token = await AuthService.getToken();
       final headersWithAuth = {
-        ...headers,
+        ...defaultHeaders,
         if (token != null) 'Authorization': 'Bearer $token',
       };
 
-      final response = await http.post(
-        Uri.parse('$baseUrl/test/results'),
+      final response = await _makeRequest(
+        'POST',
+        'test/results',
         headers: headersWithAuth,
         body: json.encode(result.toJson()),
       );
@@ -216,17 +303,17 @@ class ApiService {
   static Future<List<TestResult>?> getUserTestResults(String userId) async {
     try {
       _log('🚀 [API] Buscando resultados do usuário: $userId');
-      _log('📍 [API] URL: $baseUrl/test/results');
       
       // Obter token de autenticação
       final token = await AuthService.getToken();
       final headersWithAuth = {
-        ...headers,
+        ...defaultHeaders,
         if (token != null) 'Authorization': 'Bearer $token',
       };
 
-      final response = await http.get(
-        Uri.parse('$baseUrl/test/results'),
+      final response = await _makeRequest(
+        'GET',
+        'test/results',
         headers: headersWithAuth,
       );
 
@@ -245,6 +332,32 @@ class ApiService {
     } catch (e) {
       _log('💥 [API] ERRO ao buscar resultados: $e');
       return null;
+    }
+  }
+
+  // Método de teste de conexão com a API
+  static Future<bool> testConnection() async {
+    try {
+      _log('🧪 [API] Testando conexão com a API...');
+      
+      final response = await _makeRequest(
+        'GET',
+        'health',
+        headers: defaultHeaders,
+        timeoutSeconds: 10,
+      );
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        _log('✅ [API] Conexão testada com sucesso: ${data['status']}');
+        return true;
+      } else {
+        _log('❌ [API] Health check falhou: ${response.statusCode}');
+        return false;
+      }
+    } catch (e) {
+      _log('💥 [API] ERRO no teste de conexão: $e');
+      return false;
     }
   }
 }
