@@ -13,10 +13,10 @@ class Environment {
   );
 
   // URL padrão (produção)
-  static const String _defaultApiUrl = 'https://unidecide-api.onrender.com/api';
+  static const String _defaultApiUrl = 'https://unidecide.onrender.com';
 
   // URLs alternativas para diferentes ambientes
-  static const String productionUrl = 'https://unidecide-api.onrender.com/api';
+  static const String productionUrl = 'https://unidecide.onrender.com';
   static const String developmentUrl = 'http://localhost:3000/api';
   
   // Detectar se está em modo debug
