@@ -9,7 +9,6 @@ import 'auth_service.dart';
 class TestService {
   static const String _resultsKey = 'user_test_results';
   static const String _temporaryResultKey = 'temporary_test_result';
-  static const String baseUrl = 'http://192.168.10.7:3000/api';
 
   // =========================
   // RESULTADO TEMPORÁRIO
@@ -163,7 +162,7 @@ class TestService {
       if (token == null) return [];
 
       final response = await http.get(
-        Uri.parse('$baseUrl/test/results'),
+        Uri.parse('$ApiService.baseUrl/test/results'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $token',
